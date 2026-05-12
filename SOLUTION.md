@@ -1,5 +1,7 @@
 # SMILES-2026 Hallucination Detection — SOLUTION
 
+Public link to generated evaluation artifacts: https://drive.google.com/drive/u/1/folders/1Itpne50D1SmXzDSvzEFjt8m35s-YlN4-
+
 ## Final Results
 
 5-fold stratified cross-validation (seed = 42), averaged across folds:
@@ -243,8 +245,3 @@ The final submission uses:
 * max pooling
 * logistic regression with strong regularization
 
-
-
-# Artifacts
-
-Public link to generated evaluation artifacts: https://drive.google.com/drive/u/1/folders/1Itpne50D1SmXzDSvzEFjt8m35s-YlN4-

@@ -145,16 +145,14 @@ LogisticRegression(
 
 ### Threshold tuning
 
-The decision threshold is tuned on the validation split using F1-score maximisation.
+The decision threshold is tuned on the validation split using validation accuracy optimisation.
 
 The dataset is class-imbalanced:
 
 - hallucinated: 483
-    
 - truthful: 206
-    
 
-Threshold tuning improved validation stability compared to a fixed threshold of 0.5.
+Validation-based threshold tuning improved prediction stability compared to using a fixed threshold of 0.5.
 
 ---
 

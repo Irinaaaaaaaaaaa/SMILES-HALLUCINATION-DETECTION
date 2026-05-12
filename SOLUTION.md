@@ -1,384 +1,249 @@
-# SOLUTION.md — SMILES-2026 Hallucination Detection
+# SMILES-2026 Hallucination Detection — SOLUTION
 
-## Reproducibility Instructions
+## Final Results
 
-### Environment
+5-fold stratified cross-validation (seed = 42), averaged across folds:
 
-- Python 3.10+
-- CUDA GPU recommended
-- Tested on Google Colab T4 GPU
+| Checkpoint | Accuracy | F1 | AUROC |
+|---|---:|---:|---:|
+| Majority-class baseline | 70.10% | 82.42% | N/A |
+| Probe — train split | 97.99% | 98.61% | 100.00% |
+| Probe — validation split | 77.88% | 84.68% | 79.30% |
+| Probe — test split | 74.60% | 82.89% | 78.82% |
 
-Install dependencies:
+Final feature dimension: **1792**
+
+
+---
+
+# Reproducibility
+
+## Environment
+
+Tested on:
+
+- Google Colab T4 GPU
+- Python 3.11
+- PyTorch + HuggingFace Transformers
+- scikit-learn
+
+## Commands
 
 ```bash
+git clone <YOUR_REPOSITORY_LINK>
+cd SMILES-HALLUCINATION-DETECTION
+
 pip install -r requirements.txt
+
+python solution.py
 ````
 
-Run the full pipeline:
+Running `solution.py` generates:
 
-```bash
-python solution.py
-```
+* `results.json`
+* `predictions.csv`
 
-This command:
-
-1. Loads `data/dataset.csv`
-    
-2. Extracts hidden states from `Qwen/Qwen2.5-0.5B`
-    
-3. Aggregates hidden-state features
-    
-4. Runs 5-fold cross-validation
-    
-5. Trains the probe classifier
-    
-6. Generates:
-    
-    - `results.json`
-        
-    - `predictions.csv`
-        
-
-No changes to the fixed infrastructure files (`solution.py`, `model.py`, `evaluate.py`) are required.
 
 ---
 
-# Final Solution Description
+# Final Solution
 
-## Modified Files
+The final solution modifies:
 
-The following student-editable files were modified:
+* `aggregation.py`
+* `probe.py`
+* `splitting.py`
 
-- `aggregation.py`
-    
-- `probe.py`
-    
-- `splitting.py`
-    
+The overall pipeline is:
+
+1. Extract hidden states from Qwen/Qwen2.5-0.5B
+2. Aggregate response-token representations from middle transformer layers
+3. Train a lightweight logistic regression classifier
 
 ---
 
-# aggregation.py
+# Aggregation Strategy
 
-## Multi-layer hidden-state aggregation
+The final aggregation strategy focuses only on the model response tokens rather than the entire prompt.
 
-The final solution aggregates information from multiple transformer layers instead of using only the final token representation.
+## Key design choices
 
-### Final aggregation strategy
+### Response-only pooling
 
-The final configuration:
+Instead of pooling over the full prompt + response sequence, the aggregation only uses hidden states corresponding to the generated response.
 
-1. Selects the last 8 transformer layers
-    
-2. Mean-pools all real (non-padding) tokens for each selected layer
-    
-3. Adds:
-    
-    - final-layer last-token representation
-        
-    - final-layer max pooled representation
-        
-4. Concatenates all vectors into a single feature representation
-    
+This significantly improved generalization because hallucination-related signals are concentrated in the generated answer rather than in the user prompt.
 
-Final feature dimension:
+---
+
+### Middle transformer layers
+
+The final solution uses hidden states from transformer layers:
+
+* Layer 12
+* Layer 13
+
+Middle layers consistently performed better than final layers during experiments.
+
+---
+
+### Max pooling
+
+For each selected layer:
+
+* hidden states over response tokens are extracted
+* element-wise max pooling is applied
+
+The pooled vectors from layers 12 and 13 are concatenated.
+
+Final feature size:
 
 ```text
-10 × 896 = 8960
+2 × 896 = 1792
 ```
-
-### Motivation
-
-Hallucination-related signals are often distributed across multiple positions and layers. Multi-layer aggregation allows the classifier to access richer semantic and factual representations encoded in deeper transformer layers.
-
-Mean pooling improved stability compared to using only the last token.
-
-Max pooling was added to capture strong activation spikes potentially associated with hallucinated generations.
 
 ---
 
-## Geometric Features
+# Probe Classifier
 
-The implementation also supports optional geometric/statistical features:
-
-- layer-wise L2 norms
-    
-- inter-layer cosine similarity
-    
-- norm ratio between early and late layers
-    
-- activation spread statistics
-    
-
-These features can be enabled with:
+The final classifier is:
 
 ```python
-USE_GEOMETRIC = True
+StandardScaler +
+LogisticRegression(C=0.01)
 ```
 
-Experiments showed only marginal and inconsistent gains, so geometric features were not used in the final configuration.
+Configuration:
+
+* strong L2 regularization (`C=0.01`)
+* `max_iter=2000`
+* `random_state=42`
+
+No PCA or neural probe was used in the final submission.
 
 ---
 
-# probe.py
+# Why This Worked
 
-## Final Probe
+The largest improvements came from:
 
-The final submitted probe uses:
+1. Using only response tokens
+2. Switching from mean pooling to max pooling
+3. Using middle transformer layers instead of the final layers
+4. Stronger regularization in logistic regression
 
-```text
-StandardScaler → PCA(256) → LogisticRegression
-```
-
-### Final hyperparameters
-
-```python
-PCA(n_components=256, random_state=42)
-
-LogisticRegression(
-    C=0.01,
-    class_weight="balanced",
-    max_iter=2000,
-    random_state=42,
-)
-```
-
-### Threshold tuning
-
-The decision threshold is tuned on the validation split using validation accuracy optimisation.
-
-The dataset is class-imbalanced:
-
-- hallucinated: 483
-- truthful: 206
-
-Validation-based threshold tuning improved prediction stability compared to using a fixed threshold of 0.5.
-
----
-
-# splitting.py
-
-## Stratified 5-Fold Cross-Validation
-
-The dataset contains only 689 labelled samples, making single train/test splits unstable.
-
-The final solution uses:
-
-- Stratified 5-fold cross-validation
-    
-- Additional stratified validation split inside each fold
-    
-
-Per fold:
-
-- ~68% train
-    
-- ~12% validation
-    
-- ~20% test
-    
-
-All splits preserve class balance.
-
----
-
-# Final Results
-
-Final configuration:
-
-- Last 8 transformer layers
-    
-- Mean + last-token + max pooling
-    
-- PCA(256)
-    
-- Logistic Regression probe
-    
-- 5-fold stratified CV
-    
-
-Final averaged metrics:
-
-|Metric|Value|
-|---|--:|
-|Test Accuracy|70.10%|
-|Test F1|81.40%|
-|Test AUROC|67.07%|
+The final approach improved both validation and test AUROC substantially compared to the initial baseline implementations.
 
 ---
 
 # Experiments and Failed Attempts
 
-## 1. Deep MLP Ensemble
+## 1. Last 8 layers + mean pooling
 
-### Configuration
+Initial implementation:
 
-- 5-model ensemble
-    
-- 300 epochs
-    
-- BatchNorm + GELU + Dropout
-    
-- AdamW optimizer
-    
-- cosine annealing scheduler
-    
+* last 8 transformer layers
+* mean pooling over all tokens
+* final-token representation
+* optional max pooling
 
-### Result
+Result:
 
-- train AUROC ≈ 100%
-    
-- test AUROC ≈ 64%
-    
-
-### Conclusion
-
-The model heavily overfit the small dataset despite strong regularisation.
-
-Discarded in favour of simpler linear models.
+* severe overfitting
+* test AUROC around 64–67%
 
 ---
 
-## 2. Smaller MLP Variants
+## 2. Geometric handcrafted features
 
-### Experiments
+Tried features such as:
 
-- reduced hidden dimensions
-    
-- fewer epochs
-    
-- single-network MLP instead of ensemble
-    
+* layer norm statistics
+* cosine drift between layers
+* activation spread
 
-### Result
-
-Overfitting was reduced slightly but performance remained below the Logistic Regression probe.
-
-Discarded.
+These features did not improve validation or test metrics and were removed from the final solution.
 
 ---
 
-## 3. Number of Aggregated Layers
+## 3. PCA dimensionality reduction
 
-### Last 4 layers
+Tested PCA with:
 
-Reducing aggregation from the last 8 transformer layers to the last 4 layers:
+* 32 components
+* 64 components
+* 128 components
+* 256 components
 
-- feature dimension reduced from 8960 → 5376
-    
-- test AUROC dropped from ~64–65% → ~62%
-    
+Results:
 
-### Conclusion
-
-Using more upper transformer layers improved representation quality and probe performance.
-
-The final solution kept the last 8 layers.
+* low-dimensional PCA strongly reduced performance
+* PCA(256) improved results slightly
+* however, the response-only aggregation strategy without PCA performed best overall
 
 ---
 
-## 4. PCA Dimensionality Experiments
+## 4. Different Logistic Regression regularization strengths
 
-Several PCA dimensions were evaluated:
+Tested:
 
-|PCA Components|Test AUROC|
-|---|--:|
-|32|~64.3%|
-|64|~62.3%|
-|128|~65.1%|
-|256|~67.1%|
+* `C=0.3`
+* `C=0.1`
+* `C=0.03`
+* `C=0.01`
 
-### Conclusion
-
-PCA(256) gave the best balance between dimensionality reduction and information retention.
-
----
-
-## 5. Logistic Regression Regularisation (`C`)
-
-Several values of `C` were evaluated:
-
-|C|Test AUROC|
-|---|--:|
-|0.3|~64.9%|
-|0.1|~64.8%|
-|0.03|~64.9%|
-|0.01|~65.1%|
-
-### Conclusion
-
-Smaller `C` values (stronger regularisation) improved generalisation and reduced overfitting.
-
-The final model used:
+Best results were achieved with:
 
 ```python
-C=0.01
+C = 0.01
 ```
+
+Smaller values improved generalization and reduced overfitting.
 
 ---
 
-## 6. Alternative Logistic Regression Solver
+## 5. Alternative solvers
 
-### Experiment
-
-Tried:
+Tested:
 
 ```python
 solver="liblinear"
 ```
 
-### Result
-
-- stronger overfitting
-    
-- lower test accuracy
-    
-- lower test AUROC
-    
-
-### Conclusion
-
-The default solver performed better and was retained.
+This reduced overall performance and increased overfitting.
 
 ---
 
-## 7. Geometric Features
+## 6. PCA + Logistic Regression pipeline
 
-### Experiment
+A pipeline with:
 
-Tried:
+```python
+StandardScaler ->
+PCA ->
+LogisticRegression
+```
 
-- layer norm statistics
-    
-- inter-layer cosine similarities
-    
+was tested extensively.
 
-### Result
-
-Minor improvements in some folds but inconsistent overall gains.
-
-### Conclusion
-
-Not included in the final submission.
+Although it stabilized training, the final response-only feature aggregation outperformed all PCA-based variants.
 
 ---
 
-# What Contributed Most
+# Final Notes
 
-The largest improvements came from:
+The final solution remains lightweight, reproducible, and fully compatible with the provided infrastructure.
 
-1. Multi-layer aggregation over the last transformer layers
-    
-2. PCA dimensionality reduction
-    
-3. Replacing deep overfitting MLPs with a simpler Logistic Regression probe
-    
-4. Stronger regularisation (`C=0.01`)
-    
-5. Stratified 5-fold evaluation for more stable estimates
-    
+No fixed infrastructure files were modified.
 
-The main lesson from the experiments was that the dataset is small enough that simpler linear models generalise better than large neural probes.
+The final submission uses:
+
+* response-token hidden states
+* layers 12 and 13
+* max pooling
+* logistic regression with strong regularization
+
+
 
 # Artifacts
 

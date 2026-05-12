@@ -32,7 +32,7 @@ Tested on:
 ## Commands
 
 ```bash
-git clone <YOUR_REPOSITORY_LINK>
+git clone https://github.com/Irinaaaaaaaaaaa/SMILES-HALLUCINATION-DETECTION.git
 cd SMILES-HALLUCINATION-DETECTION
 
 pip install -r requirements.txt

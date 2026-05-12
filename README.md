@@ -1,11 +1,12 @@
-# 🔍 SMILES-2026 Hallucination Detection
-
 # My Final Result
 
 - Test AUROC: 67.07%
 - Test Accuracy: 70.10%
 - Feature dim: 8960
 - Probe: PCA(256) + Logistic Regression
+
+# 🔍 SMILES-2026 Hallucination Detection
+
 
 Detect whether a small language
 model's answer is *hallucinated* (fabricated) or *truthful* using the model's

@@ -382,3 +382,7 @@ The largest improvements came from:
     
 
 The main lesson from the experiments was that the dataset is small enough that simpler linear models generalise better than large neural probes.
+
+# Artifacts
+
+Public link to generated evaluation artifacts: https://drive.google.com/drive/u/1/folders/1Itpne50D1SmXzDSvzEFjt8m35s-YlN4-

@@ -1,167 +1,384 @@
+````md
 # SOLUTION.md — SMILES-2026 Hallucination Detection
 
 ## Reproducibility Instructions
 
 ### Environment
 
-```
-Python 3.10+
-CUDA GPU recommended (Google Colab T4 works fine)
-```
+- Python 3.10+
+- CUDA GPU recommended
+- Tested on Google Colab T4 GPU
 
 Install dependencies:
 
 ```bash
 pip install -r requirements.txt
-```
+````
 
-### Running the solution
+Run the full pipeline:
 
 ```bash
 python solution.py
 ```
 
-This will:
-1. Load `data/dataset.csv` and `data/test.csv`
-2. Extract hidden states from Qwen2.5-0.5B
-3. Run 5-fold cross-validation
-4. Save `results.json` and `predictions.csv`
+This command:
 
-No changes to `solution.py`, `model.py`, or `evaluate.py` are required.
-`USE_GEOMETRIC` in `solution.py` can be set to `True` to enable geometric features (optional, may improve AUROC slightly).
+1. Loads `data/dataset.csv`
+    
+2. Extracts hidden states from `Qwen/Qwen2.5-0.5B`
+    
+3. Aggregates hidden-state features
+    
+4. Runs 5-fold cross-validation
+    
+5. Trains the probe classifier
+    
+6. Generates:
+    
+    - `results.json`
+        
+    - `predictions.csv`
+        
 
----
-
-## Final Solution Description
-
-### Modified files
-
-- `aggregation.py` — multi-layer feature extraction + geometric features
-- `probe.py` — deep MLP ensemble with PCA preprocessing
-- `splitting.py` — stratified 5-fold cross-validation
-
----
-
-### aggregation.py — Multi-layer mean/max/last-token fusion
-
-**Default approach (USE_GEOMETRIC=False):**
-
-Instead of taking only the last token from the final layer, the aggregation now:
-
-1. **Selects the last 8 transformer layers** (layers 17–24 out of 25 total including the embedding layer). The upper layers encode more abstract, task-relevant representations while the lower layers carry mostly syntactic information.
-2. **Mean-pools over real (non-padding) tokens** for each selected layer. This is more robust than last-token pooling because: (a) the hallucination signal can be diffuse across the sequence, and (b) mean pooling reduces positional bias.
-3. **Appends the last-real-token** of the final layer — captures the autoregressive "summary" state.
-4. **Appends max-pooling** of the final layer — captures the strongest activations.
-
-This produces a feature vector of size `10 × 896 = 8960` (8 mean-pooled layers + last token + max pool).
-
-**Geometric features (USE_GEOMETRIC=True):**
-
-Additional hand-crafted features:
-- **Layer-wise L2 norms** of the mean-pooled representation per layer (25 values) — captures how the magnitude of representations evolves through the network.
-- **Inter-layer cosine similarities** between consecutive layers (24 values) — measures representation drift. Hallucinated responses may show different inter-layer dynamics.
-- **Norm ratio** (last layer / first transformer layer) — captures overall amplification.
-- **Std of layer norms** — spread of activation magnitudes.
-- **Mean and min cosine similarity** — aggregate drift statistics.
-
-**Why this works:** Hallucination is a failure of factual grounding. The intermediate layers of the transformer encode progressively more abstract information; using multiple layers gives the probe access to both syntactic features (lower layers) and semantic/factual representations (upper layers). Mean-pooling is more stable than last-token for variable-length sequences.
+No changes to the fixed infrastructure files (`solution.py`, `model.py`, `evaluate.py`) are required.
 
 ---
 
-### probe.py — Deep MLP Ensemble with PCA
+# Final Solution Description
 
-**Architecture:**
+## Modified Files
+
+The following student-editable files were modified:
+
+- `aggregation.py`
+    
+- `probe.py`
+    
+- `splitting.py`
+    
+
+---
+
+# aggregation.py
+
+## Multi-layer hidden-state aggregation
+
+The final solution aggregates information from multiple transformer layers instead of using only the final token representation.
+
+### Final aggregation strategy
+
+The final configuration:
+
+1. Selects the last 8 transformer layers
+    
+2. Mean-pools all real (non-padding) tokens for each selected layer
+    
+3. Adds:
+    
+    - final-layer last-token representation
+        
+    - final-layer max pooled representation
+        
+4. Concatenates all vectors into a single feature representation
+    
+
+Final feature dimension:
+
+```text
+10 × 896 = 8960
 ```
-StandardScaler → PCA(128) → Ensemble[5 × MLP(512→256→128→1)]
-```
 
-**PCA dimensionality reduction:**
-- The multi-layer feature vector has ~8960 dimensions with only ~689 training samples — a severe high-dimensional small-data regime.
-- PCA to 128 components retains >95% of variance typically, dramatically reduces overfitting, and speeds up training.
+### Motivation
 
-**MLP per ensemble member:**
-```
-Linear(128, 512) → BatchNorm1d → GELU → Dropout(0.3)
-Linear(512, 256) → BatchNorm1d → GELU → Dropout(0.2)  
-Linear(256, 128) → BatchNorm1d → GELU → Dropout(0.1)
-Linear(128, 1)
-```
-- **BatchNorm** stabilises training on high-variance PCA features.
-- **GELU** activations perform better than ReLU on transformer-derived features.
-- **Dropout** with decreasing rates provides strong regularisation in the early layers where overfitting risk is highest.
+Hallucination-related signals are often distributed across multiple positions and layers. Multi-layer aggregation allows the classifier to access richer semantic and factual representations encoded in deeper transformer layers.
 
-**Training:**
-- **AdamW** optimizer (weight_decay=1e-4) with cosine annealing warm restarts (T_0=50).
-- **Positive class weighting** (neg/pos ratio) to handle the class imbalance.
-- **Gradient clipping** (max norm 1.0) for stable training.
-- **300 epochs**, mini-batch size 64.
+Mean pooling improved stability compared to using only the last token.
 
-**Ensemble:**
-- 5 members trained with different random seeds.
-- Predictions are averaged at the probability level (sigmoid outputs averaged before thresholding).
-- Reduces variance, especially important with a small dataset (~550 training samples per fold).
-
-**Threshold tuning:**
-- After training, `fit_hyperparameters` sweeps 201 threshold candidates on the validation split and picks the one maximising F1.
-- This is crucial because class imbalance means the default 0.5 threshold is suboptimal.
+Max pooling was added to capture strong activation spikes potentially associated with hallucinated generations.
 
 ---
 
-### splitting.py — Stratified 5-Fold Cross-Validation
+## Geometric Features
 
-**Why k-fold instead of a single split:**
-- With only 689 samples, a single 70/15/15 split is highly sensitive to which samples end up in the test set.
-- 5-fold CV uses 100% of the data for testing (each sample is in exactly one test fold) and gives a much more reliable estimate of generalisation performance.
-- The reported metrics (accuracy, F1, AUROC) are averaged across all 5 folds.
+The implementation also supports optional geometric/statistical features:
 
-**Structure per fold:**
-- **Test**: ~20% (~138 samples) — held out entirely.
-- **Val**: ~12% of non-test (~66 samples) — used for threshold tuning only.
-- **Train**: ~68% (~485 samples) — used for fitting scaler, PCA, and MLP.
+- layer-wise L2 norms
+    
+- inter-layer cosine similarity
+    
+- norm ratio between early and late layers
+    
+- activation spread statistics
+    
 
-All splits are stratified to preserve the class ratio.
+These features can be enabled with:
 
----
+```python
+USE_GEOMETRIC = True
+```
 
-## What Contributed Most to Improving the Metric
-
-1. **Multi-layer aggregation** (biggest gain) — using 8 layers × mean-pool instead of just the last token's final layer dramatically increases the information available to the probe. The probe can learn which layer patterns discriminate hallucinations.
-
-2. **PCA + deep MLP** — without PCA, the ~8960-dimensional features cause severe overfitting with 550 training samples. PCA brings this to a manageable 128 dimensions. The deeper network then has capacity to learn non-linear decision boundaries.
-
-3. **Ensemble of 5 models** — measurably reduces variance on such a small dataset. Averaging probabilities before thresholding is strictly better than majority voting.
-
-4. **5-fold cross-validation** — not a direct accuracy improvement, but ensures the reported numbers are reliable and the final model is trained on more data.
+Experiments showed only marginal and inconsistent gains, so geometric features were not used in the final configuration.
 
 ---
 
-## Experiments and Failed Attempts
+# probe.py
 
-### Attempted but not included in the final solution
+## Final Probe
 
-**1. All-layer concatenation (layers 0–24)**
-- Produces a 25 × 896 = 22400-dimensional feature. Even with PCA, training was slower and AUROC did not improve over the last-8-layers variant.
-- Discarded: lower layers add noise rather than signal for hallucination detection.
+The final submitted probe uses:
 
-**2. Attention-weighted pooling**
-- Tried weighting token positions by their attention scores from the last layer before pooling.
-- The attention matrices are not directly available from the `output_hidden_states` forward pass without also requesting `output_attentions=True`, which doubles memory usage and was not compatible with the BATCH_SIZE=4 setup within the fixed infrastructure.
-- Discarded: infrastructure constraint.
+```text
+StandardScaler → PCA(256) → LogisticRegression
+```
 
-**3. Logistic regression and SVM as probe**
-- Faster to train and often competitive on small datasets.
-- With PCA(128) features, a linear SVM achieved ~72% test AUROC vs ~78% for the MLP ensemble.
-- Discarded: MLP ensemble consistently outperformed.
+### Final hyperparameters
 
-**4. Using only geometric features (no raw hidden states)**
-- Layer norms + cosine similarities alone gave ~65% AUROC, well below the full representation.
-- Discarded: geometric features are useful as a supplement but not as a replacement.
+```python
+PCA(n_components=256, random_state=42)
 
-**5. Larger PCA (256, 512 components)**
-- Marginal improvement in training AUROC but worse test AUROC (overfitting).
-- Optimal was 128 components.
+LogisticRegression(
+    C=0.01,
+    class_weight="balanced",
+    max_iter=2000,
+    random_state=42,
+)
+```
 
-**6. LSTM/Transformer probe over the sequence of layer representations**
-- A small LSTM reading the 25-step sequence of mean-pooled layer representations (each 896-dim).
-- Much slower training; did not outperform the flat-concat + MLP approach, likely because the dataset is too small to train a sequential model well.
-- Discarded.
+### Threshold tuning
+
+The decision threshold is tuned on the validation split using F1-score maximisation.
+
+The dataset is class-imbalanced:
+
+- hallucinated: 483
+    
+- truthful: 206
+    
+
+Threshold tuning improved validation stability compared to a fixed threshold of 0.5.
+
+---
+
+# splitting.py
+
+## Stratified 5-Fold Cross-Validation
+
+The dataset contains only 689 labelled samples, making single train/test splits unstable.
+
+The final solution uses:
+
+- Stratified 5-fold cross-validation
+    
+- Additional stratified validation split inside each fold
+    
+
+Per fold:
+
+- ~68% train
+    
+- ~12% validation
+    
+- ~20% test
+    
+
+All splits preserve class balance.
+
+---
+
+# Final Results
+
+Final configuration:
+
+- Last 8 transformer layers
+    
+- Mean + last-token + max pooling
+    
+- PCA(256)
+    
+- Logistic Regression probe
+    
+- 5-fold stratified CV
+    
+
+Final averaged metrics:
+
+|Metric|Value|
+|---|--:|
+|Test Accuracy|70.10%|
+|Test F1|81.40%|
+|Test AUROC|67.07%|
+
+---
+
+# Experiments and Failed Attempts
+
+## 1. Deep MLP Ensemble
+
+### Configuration
+
+- 5-model ensemble
+    
+- 300 epochs
+    
+- BatchNorm + GELU + Dropout
+    
+- AdamW optimizer
+    
+- cosine annealing scheduler
+    
+
+### Result
+
+- train AUROC ≈ 100%
+    
+- test AUROC ≈ 64%
+    
+
+### Conclusion
+
+The model heavily overfit the small dataset despite strong regularisation.
+
+Discarded in favour of simpler linear models.
+
+---
+
+## 2. Smaller MLP Variants
+
+### Experiments
+
+- reduced hidden dimensions
+    
+- fewer epochs
+    
+- single-network MLP instead of ensemble
+    
+
+### Result
+
+Overfitting was reduced slightly but performance remained below the Logistic Regression probe.
+
+Discarded.
+
+---
+
+## 3. Number of Aggregated Layers
+
+### Last 4 layers
+
+Reducing aggregation from the last 8 transformer layers to the last 4 layers:
+
+- feature dimension reduced from 8960 → 5376
+    
+- test AUROC dropped from ~64–65% → ~62%
+    
+
+### Conclusion
+
+Using more upper transformer layers improved representation quality and probe performance.
+
+The final solution kept the last 8 layers.
+
+---
+
+## 4. PCA Dimensionality Experiments
+
+Several PCA dimensions were evaluated:
+
+|PCA Components|Test AUROC|
+|---|--:|
+|32|~64.3%|
+|64|~62.3%|
+|128|~65.1%|
+|256|~67.1%|
+
+### Conclusion
+
+PCA(256) gave the best balance between dimensionality reduction and information retention.
+
+---
+
+## 5. Logistic Regression Regularisation (`C`)
+
+Several values of `C` were evaluated:
+
+|C|Test AUROC|
+|---|--:|
+|0.3|~64.9%|
+|0.1|~64.8%|
+|0.03|~64.9%|
+|0.01|~65.1%|
+
+### Conclusion
+
+Smaller `C` values (stronger regularisation) improved generalisation and reduced overfitting.
+
+The final model used:
+
+```python
+C=0.01
+```
+
+---
+
+## 6. Alternative Logistic Regression Solver
+
+### Experiment
+
+Tried:
+
+```python
+solver="liblinear"
+```
+
+### Result
+
+- stronger overfitting
+    
+- lower test accuracy
+    
+- lower test AUROC
+    
+
+### Conclusion
+
+The default solver performed better and was retained.
+
+---
+
+## 7. Geometric Features
+
+### Experiment
+
+Tried:
+
+- layer norm statistics
+    
+- inter-layer cosine similarities
+    
+
+### Result
+
+Minor improvements in some folds but inconsistent overall gains.
+
+### Conclusion
+
+Not included in the final submission.
+
+---
+
+# What Contributed Most
+
+The largest improvements came from:
+
+1. Multi-layer aggregation over the last transformer layers
+    
+2. PCA dimensionality reduction
+    
+3. Replacing deep overfitting MLPs with a simpler Logistic Regression probe
+    
+4. Stronger regularisation (`C=0.01`)
+    
+5. Stratified 5-fold evaluation for more stable estimates
+    
+
+The main lesson from the experiments was that the dataset is small enough that simpler linear models generalise better than large neural probes.

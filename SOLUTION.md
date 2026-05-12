@@ -1,4 +1,3 @@
-````md
 # SOLUTION.md — SMILES-2026 Hallucination Detection
 
 ## Reproducibility Instructions
